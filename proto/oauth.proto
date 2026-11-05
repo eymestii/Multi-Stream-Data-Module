@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package oauth;
+
+// Servicio OAuth para gestión de tokens de Twitch y Kick.
+// El servidor gRPC (módulo OAuth, ya existente) escucha en localhost:50052 por defecto.
+// El cliente streamchat solo necesita saber el nombre de la plataforma ("twitch" o "kick")
+// y la dirección del servidor. Todo lo demás lo maneja el servidor internamente.
+service OAuthService {
+  // Obtiene el access token actual de Twitch o Kick.
+  rpc GetToken(GetTokenRequest) returns (TokenResponse);
+
+  // Refresca el token usando el refresh_token guardado.
+  rpc RefreshToken(RefreshRequest) returns (TokenResponse);
+
+  // Obtiene todos los datos: tokens, bot_user_id, broadcaster_ids, scope, etc.
+  rpc GetCredentials(CredentialsRequest) returns (CredentialsResponse);
+
+  // Revoca un token en Twitch o Kick.
+  rpc RevokeToken(RevokeRequest) returns (RevokeResponse);
+}
+
+message GetTokenRequest {
+  string platform = 1; // "twitch" o "kick"
+}
+
+message RefreshRequest {
+  string platform = 1; // "twitch" o "kick"
+}
+
+message CredentialsRequest {
+  string platform = 1; // "twitch" o "kick"
+}
+
+message RevokeRequest {
+  string platform = 1; // "twitch" o "kick"
+}
+
+message TokenResponse {
+  string platform     = 1;
+  string access_token = 2;      // Nuevo access token
+  string refresh_token= 3;      // Nuevo refresh_token (si la plataforma lo rota)
+  string token_type   = 4;      // "bearer" o "Bearer"
+  int32  expires_in   = 5;      // Segundos hasta que expira
+  string scope        = 6;      // Scopes concedidos
+  bool   success      = 7;      // true si tuvo éxito
+  string error        = 8;      // Mensaje de error si falló
+}
+
+message CredentialsResponse {
+  string platform      = 1;
+  string access_token  = 2;
+  string refresh_token = 3;
+  string bot_user_id   = 4;      // Id numérico del usuario dueño del token
+  repeated int64 broadcaster_ids = 5;  // Ids numéricos de los canales
+  string scope         = 6;      // Scopes concedidos
+  string found         = 7;      // true/false como string ("true"/"false")
+  string error         = 8;      // Mensaje de error si falló
+}
+
+message RevokeResponse {
+  string platform = 1;
+  bool   success  = 2;           // true si se revocó correctamente
+  string error    = 3;           // Mensaje de error si falló
+}

@@ -1,0 +1,226 @@
+syntax = "proto3";
+
+package streamchat.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Servicio que unifica los eventos de chat de Twitch y Kick.
+service ChatHub {
+  // Stream continuo de eventos. El cliente puede reanudar desde el último
+  // evento que procesó usando resume_after_id.
+  rpc StreamEvents(StreamEventsRequest) returns (stream ChatEvent);
+
+  // Envía un mensaje al chat de un canal en la plataforma indicada.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+
+  // Canales que la app está escuchando actualmente.
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+}
+
+// ---------- Tipos base ----------
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  PLATFORM_TWITCH = 1;
+  PLATFORM_KICK = 2;
+}
+
+message Channel {
+  Platform platform = 1;
+  string id = 2;            // broadcaster_user_id en ambas plataformas
+  string slug = 3;          // login en Twitch, slug en Kick
+  string display_name = 4;
+}
+
+message User {
+  string id = 1;
+  string username = 2;
+  string display_name = 3;
+  string color = 4;                // hex, puede venir vacío
+  repeated Badge badges = 5;
+  bool is_broadcaster = 6;
+  bool is_moderator = 7;
+  bool is_vip = 8;
+  bool is_subscriber = 9;
+}
+
+message Badge {
+  string type = 1;      // "subscriber", "moderator", "founder", ...
+  string version = 2;   // meses de sub, nivel, etc.
+  string image_url = 3;
+}
+
+// ---------- Contenido de mensajes ----------
+
+message MessageFragment {
+  oneof kind {
+    string text = 1;
+    Emote emote = 2;
+    Mention mention = 3;
+    Cheermote cheermote = 4;  // solo Twitch
+    Gif gif = 5;
+  }
+}
+
+message Emote {
+  string id = 1;
+  string name = 2;
+  string image_url = 3;
+}
+
+message Mention {
+  string user_id = 1;
+  string username = 2;
+}
+
+message Cheermote {
+  string prefix = 1;
+  int32 bits = 2;
+  int32 tier = 3;
+}
+
+message Gif {
+  string id = 1;
+  string url = 2;
+}
+
+// ---------- Eventos ----------
+
+message ChatEvent {
+  string id = 1;                          // ULID interno, ordenable
+  Platform platform = 2;
+  string platform_event_id = 3;           // id original (para trazabilidad)
+  Channel channel = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  google.protobuf.Timestamp received_at = 6;
+
+  oneof payload {
+    ChatMessage message = 10;
+    MessageDeleted message_deleted = 11;
+    ChatCleared chat_cleared = 12;
+    UserBanned user_banned = 13;
+    Follow follow = 14;
+    Subscription subscription = 15;
+    GiftSubscription gift_subscription = 16;
+    Raid raid = 17;
+    Cheer cheer = 18;
+    StreamStatus stream_status = 19;
+    RewardRedemption reward_redemption = 20;
+  }
+
+  // JSON original del evento, opcional, útil para depurar
+  // o para campos que el modelo común todavía no cubre.
+  string raw_json = 99;
+}
+
+message ChatMessage {
+  string message_id = 1;
+  User sender = 2;
+  string text = 3;                          // texto plano completo
+  repeated MessageFragment fragments = 4;   // texto ya segmentado
+  ReplyInfo reply = 5;
+}
+
+message ReplyInfo {
+  string parent_message_id = 1;
+  string parent_text = 2;
+  User parent_sender = 3;
+}
+
+message MessageDeleted {
+  string message_id = 1;
+  User moderator = 2;    // puede venir vacío
+}
+
+message ChatCleared {
+  User moderator = 1;
+}
+
+message UserBanned {
+  User user = 1;
+  User moderator = 2;
+  string reason = 3;
+  // Sin expires_at = baneo permanente; con valor = timeout.
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message Follow {
+  User follower = 1;
+}
+
+message Subscription {
+  User subscriber = 1;
+  string tier = 2;              // normalizado: "1", "2", "3"
+  int32 cumulative_months = 3;
+  int32 streak_months = 4;
+  bool is_renewal = 5;
+  string message = 6;           // mensaje de resub, si lo hay
+}
+
+message GiftSubscription {
+  User gifter = 1;              // vacío si es anónimo
+  bool is_anonymous = 2;
+  repeated User recipients = 3;
+  int32 total = 4;
+  string tier = 5;
+}
+
+message Raid {
+  User from_broadcaster = 1;
+  int32 viewers = 2;
+}
+
+message Cheer {
+  User user = 1;                // vacío si es anónimo
+  bool is_anonymous = 2;
+  int32 amount = 3;             // bits en Twitch
+  string message = 4;
+}
+
+message StreamStatus {
+  bool is_live = 1;
+  string title = 2;
+  string category = 3;
+}
+
+message RewardRedemption {
+  User user = 1;
+  string reward_id = 2;
+  string reward_title = 3;
+  int32 cost = 4;
+  string user_input = 5;
+  string status = 6;            // "unfulfilled", "fulfilled", "canceled"
+}
+
+// ---------- Requests / responses ----------
+
+message StreamEventsRequest {
+  // Vacío = todas las plataformas.
+  repeated Platform platforms = 1;
+  // Vacío = todos los canales. Formato: "<platform>:<slug>", ej. "twitch:foo".
+  repeated string channels = 2;
+  // Vacío = todos los tipos. Nombres de campo del oneof: "message", "follow"...
+  repeated string event_types = 3;
+  // Reanudar después de este id (ULID). Si ya no está en el buffer,
+  // el servidor responde con OUT_OF_RANGE.
+  string resume_after_id = 4;
+}
+
+message SendMessageRequest {
+  Platform platform = 1;
+  string channel_id = 2;
+  string text = 3;
+  string reply_to_message_id = 4;
+}
+
+message SendMessageResponse {
+  string message_id = 1;
+  bool accepted = 2;
+  string drop_reason = 3;   // ej. AutoMod en Twitch
+}
+
+message ListChannelsRequest {}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+}
