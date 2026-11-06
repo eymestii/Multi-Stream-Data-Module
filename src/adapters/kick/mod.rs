@@ -32,7 +32,9 @@ const EVENTS: &[(&str, u32)] = &[
     ("channel.subscription.new", 1),
     ("channel.subscription.renewal", 1),
     ("channel.subscription.gifts", 1),
+    ("channel.reward.redemption.updated", 1),
     ("livestream.status.updated", 1),
+    ("moderation.banned", 1),
 ];
 
 #[derive(Clone)]
@@ -55,6 +57,17 @@ pub async fn run(cfg: KickConfig, api: KickApi, hub: Arc<Hub>, cancel: Cancellat
         None
     };
 
+    let resolved_channels = match api.channels(&cfg.broadcaster_ids).await {
+        Ok(channels) => channels,
+        Err(e) => {
+            warn!(error = %format!("{e:#}"), "Kick: no se pudieron resolver los nombres de los canales");
+            Vec::new()
+        }
+    };
+    for channel in resolved_channels {
+        info!(channel_id = %channel.id, slug = %channel.slug, "Kick: canal identificado");
+        hub.register_channel(channel);
+    }
     for id in &cfg.broadcaster_ids {
         hub.register_channel(Channel {
             platform: Platform::Kick as i32,

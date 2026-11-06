@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::config::KickConfig;
 use crate::oauth_client::TokenManager;
-use crate::proto::v1::SendMessageResponse;
+use crate::proto::v1::{Channel, Platform, SendMessageResponse};
 
 const API: &str = "https://api.kick.com/public/v1";
 
@@ -44,6 +44,55 @@ impl KickApi {
 
     pub fn http(&self) -> &Client {
         &self.http
+    }
+
+    /// Obtiene los slugs de los canales configurados para que ListChannels no
+    /// tenga que mostrar sus ids mientras todavía no llegó ningún webhook.
+    pub async fn channels(&self, broadcaster_ids: &[String]) -> Result<Vec<Channel>> {
+        if broadcaster_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let token = self.access_token().await?;
+        let query: Vec<(&str, &str)> = broadcaster_ids
+            .iter()
+            .map(|id| ("broadcaster_user_id", id.as_str()))
+            .collect();
+        let resp = self
+            .http
+            .get(format!("{API}/channels"))
+            .bearer_auth(token)
+            .query(&query)
+            .send()
+            .await
+            .context("no se pudieron consultar los canales de Kick")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!("Kick respondió {status} al consultar canales: {body}");
+        }
+
+        #[derive(Deserialize)]
+        struct Envelope {
+            data: Vec<KickChannel>,
+        }
+        #[derive(Deserialize)]
+        struct KickChannel {
+            broadcaster_user_id: u64,
+            #[serde(default)]
+            slug: String,
+        }
+
+        let envelope: Envelope = resp.json().await.context("respuesta de canales de Kick inesperada")?;
+        Ok(envelope
+            .data
+            .into_iter()
+            .map(|channel| Channel {
+                platform: Platform::Kick as i32,
+                id: channel.broadcaster_user_id.to_string(),
+                display_name: channel.slug.clone(),
+                slug: channel.slug,
+            })
+            .collect())
     }
 
     /// Obtiene el access token fresco: del TokenManager si está disponible,

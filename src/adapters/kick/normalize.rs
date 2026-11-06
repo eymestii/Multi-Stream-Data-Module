@@ -8,7 +8,8 @@ use serde_json::{from_value, Value};
 
 use crate::proto::v1::{
     chat_event::Payload, message_fragment::Kind, Badge, Channel, ChatEvent, ChatMessage, Emote,
-    Follow, GiftSubscription, MessageFragment, Platform, ReplyInfo, StreamStatus, Subscription, User,
+    Follow, GiftSubscription, MessageFragment, Platform, ReplyInfo, RewardRedemption, StreamStatus,
+    Subscription, User, UserBanned,
 };
 use crate::util::{rfc3339_to_timestamp, text_fragment};
 
@@ -72,6 +73,35 @@ pub(super) fn normalize(event_type: &str, message_id: &str, body: &Value) -> Opt
                 tier: "1".into(),
             })
         }
+        "channel.reward.redemption.updated" => {
+            #[derive(Deserialize)]
+            struct Redemption {
+                id: String,
+                #[serde(default)]
+                user_input: String,
+                #[serde(default)]
+                status: String,
+                #[serde(default)]
+                redeemer: KickUser,
+                reward: Reward,
+            }
+            #[derive(Deserialize)]
+            struct Reward {
+                id: String,
+                title: String,
+                #[serde(default)]
+                cost: i32,
+            }
+            let r: Redemption = from_value(body.clone()).ok()?;
+            Payload::RewardRedemption(RewardRedemption {
+                user: Some(r.redeemer.to_user()),
+                reward_id: if r.reward.id.is_empty() { r.id } else { r.reward.id },
+                reward_title: r.reward.title,
+                cost: r.reward.cost,
+                user_input: r.user_input,
+                status: r.status,
+            })
+        }
         "livestream.status.updated" => {
             #[derive(Deserialize)]
             struct Live {
@@ -84,6 +114,29 @@ pub(super) fn normalize(event_type: &str, message_id: &str, body: &Value) -> Opt
                 is_live: l.is_live,
                 title: l.title,
                 category: String::new(),
+            })
+        }
+        "moderation.banned" => {
+            #[derive(Deserialize)]
+            struct Banned {
+                #[serde(default)]
+                moderator: KickUser,
+                #[serde(default)]
+                banned_user: KickUser,
+                #[serde(default)]
+                metadata: BanMetadata,
+            }
+            #[derive(Deserialize, Default)]
+            struct BanMetadata {
+                reason: String,
+                expires_at: Option<String>,
+            }
+            let b: Banned = from_value(body.clone()).ok()?;
+            Payload::UserBanned(UserBanned {
+                user: Some(b.banned_user.to_user()),
+                moderator: Some(b.moderator.to_user()),
+                reason: b.metadata.reason,
+                expires_at: b.metadata.expires_at.as_deref().and_then(rfc3339_to_timestamp),
             })
         }
         _ => return None,

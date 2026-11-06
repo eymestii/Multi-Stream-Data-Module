@@ -207,15 +207,38 @@ async fn subscribe_all(cfg: &TwitchConfig, api: &TwitchApi, session_id: &str) ->
     for broadcaster in &cfg.broadcaster_ids {
         let chat_condition = json!({ "broadcaster_user_id": broadcaster, "user_id": api.bot_user_id() });
         let channel_condition = json!({ "broadcaster_user_id": broadcaster });
+        let follow_condition = json!({
+            "broadcaster_user_id": broadcaster,
+            "moderator_user_id": api.bot_user_id(),
+        });
+        let raid_condition = json!({ "to_broadcaster_user_id": broadcaster });
         let subscriptions = [
-            ("channel.chat.message", chat_condition.clone()),
-            ("channel.chat.message_delete", chat_condition),
-            ("stream.online", channel_condition.clone()),
-            ("stream.offline", channel_condition),
+            ("channel.chat.message", "1", chat_condition.clone()),
+            ("channel.chat.message_delete", "1", chat_condition.clone()),
+            ("channel.chat.clear", "1", chat_condition),
+            ("channel.ban", "1", channel_condition.clone()),
+            ("channel.follow", "2", follow_condition),
+            ("channel.subscribe", "1", channel_condition.clone()),
+            ("channel.subscription.message", "1", channel_condition.clone()),
+            ("channel.subscription.gift", "1", channel_condition.clone()),
+            ("channel.raid", "1", raid_condition),
+            ("channel.cheer", "1", channel_condition.clone()),
+            (
+                "channel.channel_points_custom_reward_redemption.add",
+                "1",
+                channel_condition.clone(),
+            ),
+            (
+                "channel.channel_points_automatic_reward_redemption.add",
+                "2",
+                channel_condition.clone(),
+            ),
+            ("stream.online", "1", channel_condition.clone()),
+            ("stream.offline", "1", channel_condition),
         ];
-        for (sub_type, condition) in subscriptions {
+        for (sub_type, version, condition) in subscriptions {
             total += 1;
-            match api.create_subscription(session_id, sub_type, "1", condition).await {
+            match api.create_subscription(session_id, sub_type, version, condition).await {
                 Ok(()) => ok += 1,
                 Err(e) => warn!(%broadcaster, sub_type, error = %format!("{e:#}"), "Twitch: no se pudo suscribir"),
             }
