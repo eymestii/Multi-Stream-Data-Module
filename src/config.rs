@@ -33,6 +33,7 @@ pub struct TwitchConfig {
 pub struct KickConfig {
     pub webhook_addr: SocketAddr,
     pub webhook_path: String,
+    pub client_id: String,
     pub access_token: Option<String>,
     pub broadcaster_ids: Vec<String>,
     pub public_key_pem: Option<String>,
@@ -115,6 +116,7 @@ fn kick_config() -> Result<Option<KickConfig>> {
     Ok(Some(KickConfig {
         webhook_addr: parse_or("KICK_WEBHOOK_ADDR", SocketAddr::from(([0, 0, 0, 0], 8080)))?,
         webhook_path,
+        client_id: var("KICK_CLIENT_ID").unwrap_or_default(),
         access_token,
         broadcaster_ids,
         // Permite pegar la clave en una sola línea usando "\n".

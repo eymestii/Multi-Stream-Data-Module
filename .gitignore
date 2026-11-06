@@ -1,2 +1,32 @@
-/target
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+
+# Credenciales y configuración local
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs, volcados y artefactos empaquetados
+*.log
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

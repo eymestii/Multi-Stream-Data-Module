@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::oauth_proto::oauth::{
     o_auth_service_client::OAuthServiceClient as GrpcOAuthClient, CredentialsRequest,
-    CredentialsResponse, GetTokenRequest, RefreshRequest, RevokeRequest, RevokeResponse,
+    CredentialsResponse, RefreshRequest, RevokeRequest, RevokeResponse, TokenRequest,
     TokenResponse,
 };
 
@@ -70,7 +70,7 @@ impl OAuthClient {
 
     /// Llama a GetToken(platform) en el servidor OAuth.
     pub async fn get_token(&mut self, platform: &str) -> Result<TokenResponse> {
-        let request = tonic::Request::new(GetTokenRequest {
+        let request = tonic::Request::new(TokenRequest {
             platform: platform.to_string(),
         });
         let response = self
@@ -109,14 +109,15 @@ impl OAuthClient {
             .await
             .context("error llamando a GetCredentials en el servidor OAuth")?
             .into_inner();
-        debug!(platform, found = response.found, error = %response.error, "OAuth: GetCredentials respuesta");
+        debug!(platform, success = response.success, error = %response.error, "OAuth: GetCredentials respuesta");
         Ok(response)
     }
 
     /// Llama a RevokeToken(platform) en el servidor OAuth.
-    pub async fn revoke_token(&mut self, platform: &str) -> Result<RevokeResponse> {
+    pub async fn revoke_token(&mut self, platform: &str, token: &str) -> Result<RevokeResponse> {
         let request = tonic::Request::new(RevokeRequest {
             platform: platform.to_string(),
+            token: token.to_string(),
         });
         let response = self
             .client
@@ -150,77 +151,64 @@ impl TokenManager {
 
     /// Devuelve el access_token de Twitch, refrescando si es necesario.
     pub async fn twitch_access_token(&mut self) -> Result<String> {
-        let needs_refresh = match &self.twitch_token {
-            None => true,
-            Some(token) => token.is_expired_or_expiring_soon(self.refresh_threshold_secs),
-        };
-        if !needs_refresh {
-            return Ok(self.twitch_token.as_ref().unwrap().access_token.clone());
-        }
-
-        info!(platform = "twitch", "OAuth: obteniendo credenciales de Twitch");
-        let mut client = self.client.lock().await;
-        let creds = client.get_credentials("twitch").await?;
-        drop(client); // liberar el lock antes de mutar self.twitch_token
-
-        if creds.found == "true" {
-            // GetCredentials no devuelve expires_in; tratamos el token como sin fecha conocida.
-            let scope = if creds.scope.is_empty() { None } else { Some(creds.scope.clone()) };
-            let scope_log = scope.as_deref().map(|s| s.to_string());
-            self.twitch_token = Some(CachedToken {
-                access_token: creds.access_token,
-                refresh_token: if creds.refresh_token.is_empty() {
-                    None
-                } else {
-                    Some(creds.refresh_token)
-                },
-                expires_at: None,
-                scope,
-                platform: "twitch".to_string(),
-            });
-            info!(platform = "twitch", scope = ?scope_log, "OAuth: credenciales de Twitch obtenidas");
-            return Ok(self.twitch_token.as_ref().unwrap().access_token.clone());
-        }
-
-        // No hay credenciales guardadas, intentar refresh directo
-        self.refresh_platform("twitch").await
+        self.access_token_for("twitch").await
     }
 
     /// Devuelve el access_token de Kick, refrescando si es necesario.
     pub async fn kick_access_token(&mut self) -> Result<String> {
-        let needs_refresh = match &self.kick_token {
-            None => true,
-            Some(token) => token.is_expired_or_expiring_soon(self.refresh_threshold_secs),
+        self.access_token_for("kick").await
+    }
+
+    /// Fuerza la renovación del token de Kick (p. ej. tras un 401 de la API).
+    pub async fn force_refresh_kick(&mut self) -> Result<String> {
+        self.refresh_platform("kick").await
+    }
+
+    /// Obtiene el access_token de una plataforma.
+    ///
+    /// 1. Si el token en caché sigue vigente, se devuelve.
+    /// 2. Si no, se piden las credenciales guardadas al servidor OAuth (`GetCredentials`).
+    ///    Si el token guardado aún no expira, se cachea con su expiración real.
+    /// 3. Si el token guardado expiró (o no se conoce su expiración), se llama a `RefreshToken`.
+    async fn access_token_for(&mut self, platform: &str) -> Result<String> {
+        let cached = match platform {
+            "twitch" => self.twitch_token.as_ref(),
+            "kick" => self.kick_token.as_ref(),
+            _ => anyhow::bail!("plataforma desconocida: {}", platform),
         };
-        if !needs_refresh {
-            return Ok(self.kick_token.as_ref().unwrap().access_token.clone());
+        if let Some(token) = cached {
+            if !token.is_expired_or_expiring_soon(self.refresh_threshold_secs) {
+                return Ok(token.access_token.clone());
+            }
         }
 
-        info!(platform = "kick", "OAuth: obteniendo credenciales de Kick");
         let mut client = self.client.lock().await;
-        let creds = client.get_credentials("kick").await?;
+        let creds = client.get_credentials(platform).await?;
         drop(client);
 
-        if creds.found == "true" {
-            // GetCredentials no devuelve expires_in; tratamos el token como sin fecha conocida.
-            let scope = if creds.scope.is_empty() { None } else { Some(creds.scope.clone()) };
-            let scope_log = scope.as_deref().map(|s| s.to_string());
-            self.kick_token = Some(CachedToken {
-                access_token: creds.access_token,
-                refresh_token: if creds.refresh_token.is_empty() {
-                    None
-                } else {
-                    Some(creds.refresh_token)
-                },
-                expires_at: None,
-                scope,
-                platform: "kick".to_string(),
-            });
-            info!(platform = "kick", scope = ?scope_log, "OAuth: credenciales de Kick obtenidas");
-            return Ok(self.kick_token.as_ref().unwrap().access_token.clone());
+        if !creds.success {
+            anyhow::bail!("OAuth: GetCredentials falló para {}: {}", platform, creds.error);
         }
 
-        self.refresh_platform("kick").await
+        let expires_in = u64::try_from(creds.expires_in).unwrap_or(0);
+        if !creds.access_token.is_empty() && expires_in > self.refresh_threshold_secs {
+            let token = CachedToken {
+                access_token: creds.access_token.clone(),
+                refresh_token: (!creds.refresh_token.is_empty()).then(|| creds.refresh_token.clone()),
+                expires_at: Some(SystemTime::now() + Duration::from_secs(expires_in)),
+                scope: (!creds.scope.is_empty()).then(|| creds.scope.clone()),
+                platform: platform.to_string(),
+            };
+            match platform {
+                "twitch" => self.twitch_token = Some(token),
+                _ => self.kick_token = Some(token),
+            }
+            info!(platform = %platform, expires_in, "OAuth: credenciales obtenidas");
+            return Ok(creds.access_token);
+        }
+
+        info!(platform = %platform, "OAuth: token guardado expirado o sin expiración conocida, se renueva");
+        self.refresh_platform(platform).await
     }
 
     /// Marca el token de Twitch como inválido (401) para forzar refresco en la próxima petición.
